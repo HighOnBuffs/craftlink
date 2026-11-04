@@ -11,6 +11,7 @@ Shared core proposal: [storytold/craft-libs#601](https://github.com/storytold/cr
 - Optional candidate FigCraft integration for unsaved command notifications and conditional writes, with explicit capability checks and the upstream control-token protocol. Stock installed apps keep the saved-file path.
 - Capability manifests, Python SDK, generated-app registration example and stdio MCP facade. Native I/O runs outside the metadata lock; committed heads remain readable while projection waits.
 - Optional read-only ArtCraft Launcher binding status, proposed in [launcher PR #1239](https://github.com/storytold/craft-launcher/pull/1239). It uses the existing app details/backend boundary and is off by default.
+- Authenticated PhotoCraft 0.20.1 read-only layer metadata reference: native IDs/names/kinds/hierarchy, stable IDs under a caller-persisted document UUID, explicit edit rejection. No pixel transfer, linking or asset-store publication. See [the scoped reference](docs/PHOTOCRAFT.md).
 
 Broker metadata commits and native UI updates are separate. Native documents and opaque snapshots are retained; this is not universal lossless interchange. Only the optional candidate native endpoint has conditional writes; the legacy VectorCraft endpoint retains its documented inspect/apply race. Use owned synthetic sessions until integration hardening is complete.
 

@@ -49,4 +49,8 @@ Set `CRAFTLINK_LAUNCHER_STATUS_EXE` to that example executable, build this consu
 
 Do not start an ordinary candidate launcher beside a production launcher: its singleton handoff is shared. The probe does not start that shell. Full launcher workspace CI, singleton lifecycle and non-Windows runtime are unverified. Connection inputs are transient; no automatic discovery, polling, installation, native editing or asset browser is included.
 
-Only rectangle name/opacity and initial axis-aligned bounds are accepted. Arbitrary gestures, collaboration writes, VectorCraft unsaved events/conditional writes, other native adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.
+## PhotoCraft read-only reference
+
+PhotoCraft 0.20.1 (`327c4cc82`) passed three contract tests and five actual native/broker checks via `scripts/photocraft_smoke.py`. The separate example process registered its read-only manifest and enumerated three layers with retained hierarchy. Save/reopen preserved caller-namespaced global/native IDs; invalid native auth and unavailable sources failed explicitly. Local edits, write negotiation and direct broker commits were rejected; native file hashes stayed unchanged. Native standalone layer creation/save still worked. No core/broker dispatch change was needed. [Scope and reproduction](PHOTOCRAFT.md).
+
+Only rectangle name/opacity and initial axis-aligned bounds are accepted for bidirectional editing. PhotoCraft supports metadata inspection only. Arbitrary gestures, collaboration writes, VectorCraft unsaved events/conditional writes, additional semantic adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.

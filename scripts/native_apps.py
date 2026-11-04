@@ -40,9 +40,12 @@ class App:
         env[name.upper()+'_CONFIG_DIR']=str(profile)
         args=[str(pathlib.Path(os.environ.get('ProgramFiles','C:/Program Files'))/name.title()/(name+'.exe')),'--control',str(self.port),'--automation-read-root',str(self.directory),'--automation-write-root',str(self.directory)]
         # Product directory capitalizes the second C as well.
-        args[0]=str(pathlib.Path(os.environ.get('ProgramFiles','C:/Program Files'))/({'vectorcraft':'VectorCraft','figcraft':'FigCraft'}[name])/(name+'.exe'))
+        args[0]=str(pathlib.Path(os.environ.get('ProgramFiles','C:/Program Files'))/({'vectorcraft':'VectorCraft','figcraft':'FigCraft','photocraft':'PhotoCraft'}[name])/(name+'.exe'))
         args[0]=env.get('CRAFTLINK_'+name.upper()+'_EXE',args[0])
         self.token_file=profile/('control-'+str(self.port)+'.token')
+        if name=='photocraft':
+            env.pop('PHOTOCRAFT_CONTROL_TOKEN',None)
+            args.extend(['--new-instance','--control-token-file',str(self.token_file)])
         if native: args.append(str(native))
         self.log=open(self.directory/(name+'.log'),'ab')
         startup=subprocess.STARTUPINFO() if os.name=='nt' else None

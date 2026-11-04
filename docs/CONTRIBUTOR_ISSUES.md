@@ -4,7 +4,7 @@ The scopes below describe small contributions. Check their current public tracki
 
 - VectorCraft hooks/conditional writes: [#5675](https://github.com/storytold/vectorcraft/issues/5675).
 - FigCraft events/conditional execution: [PR #1995](https://github.com/storytold/figcraft/pull/1995). Native auth remains owned by existing [PR #1473](https://github.com/storytold/figcraft/pull/1473); isolated composition is documented in [verification](VERIFICATION.md).
-- PhotoCraft read-only layer adapter: [#11321](https://github.com/storytold/photocraft/issues/11321). Publishing read-only snapshots still needs a separate capability from semantic write permission.
+- PhotoCraft read-only layer adapter: [#11321](https://github.com/storytold/photocraft/issues/11321). The [metadata inspection reference](PHOTOCRAFT.md) is now verified. Publishing read-only snapshots still needs a separate capability from semantic write permission.
 - Launcher read-only status: [PR #1239](https://github.com/storytold/craft-launcher/pull/1239), verified as documented; broader discovery/asset browsing remains open.
 - Solid sRGB fill: [#1](https://github.com/HighOnBuffs/craftlink/issues/1).
 
