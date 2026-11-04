@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "application": "photocraft.inspector",
+  "version": "0.20.1",
+  "object_types": {"photocraft.layer": []},
+  "representations": ["application/vnd.craftlink.layer-metadata+json"],
+  "read": true,
+  "write": false,
+  "history": "native history untouched; no managed edits",
+  "transactions": "read-only inspection; no shared-store publication",
+  "lifecycle": "explicit externally owned native control session; selected document stays active",
+  "authentication": "PhotoCraft native control-token file; broker bearer for registration",
+  "filesystem": "explicit credential file only; document IO belongs to the native application",
+  "fidelity": "live source-backed layer IDs, names, kinds and hierarchy only; no pixels, masks, effects, previews or cross-app semantic editing"
+}
