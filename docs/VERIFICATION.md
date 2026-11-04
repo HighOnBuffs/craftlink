@@ -33,4 +33,20 @@ Four subprocess tests cover blocking replay/idempotency, permission/schema/path 
 
 `scripts/smoke.py` tests two real installed apps: placement, saved propagation/reverse edit, native undo/redo, save/close/reopen identity, replay, retained unsaved conflict snapshots, optimistic rejection, bad broker credential, offline catch-up, broker kill between durable commit/projection, missing-file relocation, third reference process registration and standalone workflow. A suspended receiving process must not prevent the durable commit reply or head inspection. Raw outputs stay under ignored `runtime/`.
 
-Only rectangle name/opacity and initial axis-aligned bounds are accepted. Arbitrary gestures, collaboration writes, VectorCraft unsaved events/conditional writes, launcher UI, other native adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.
+The clean consumer also passed all four subprocess tests, strict broker Clippy, 14 real saved-file checks and eight real candidate-live checks. Its small-document samples measured 171.29/138.27 ms saved forward/reverse, 60.66/124.8 ms unsaved forward/guarded reverse, and a 2.71 ms commit reply while the receiver was suspended. These are individual smoke observations, not benchmarks.
+
+## Optional launcher status
+
+[Launcher PR #1239](https://github.com/storytold/craft-launcher/pull/1239), commit `393f0adaf66dae534d6fbe2db87c3e9135841c96`, adds a feature-gated read-only section in the existing native app details drawer. Three native client tests, three UI state/render tests, 37 localization tests, strict all-target core/native/UI Clippy, formatting, the desktop feature compile check, `cargo xtask wasm` (core + full web app), and an additional WASM UI feature check passed. No dependency or lockfile changed.
+
+In an isolated launcher checkout at that commit, build:
+
+```powershell
+cargo build -p artcraft-launcher-native --example craftlink_status --features craftlink-status --locked
+```
+
+Set `CRAFTLINK_LAUNCHER_STATUS_EXE` to that example executable, build this consumer's broker, then run `python scripts/launcher_status_smoke.py`. The probe owns a real VectorCraft process and broker, reads the current binding, observes the source becoming unavailable and checks credential rejection. Three checks passed. It deletes the transient credential file and stops its own processes. The panel was separately rendered with egui_kittest and visually inspected.
+
+Do not start an ordinary candidate launcher beside a production launcher: its singleton handoff is shared. The probe does not start that shell. Full launcher workspace CI, singleton lifecycle and non-Windows runtime are unverified. Connection inputs are transient; no automatic discovery, polling, installation, native editing or asset browser is included.
+
+Only rectangle name/opacity and initial axis-aligned bounds are accepted. Arbitrary gestures, collaboration writes, VectorCraft unsaved events/conditional writes, other native adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.

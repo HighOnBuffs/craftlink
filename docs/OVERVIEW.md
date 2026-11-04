@@ -9,6 +9,7 @@ Shared core: [craft-libs PR #601](https://github.com/storytold/craft-libs/pull/6
 | Coordination | `crates/broker/src/main.rs` | Authenticated loopback JSON-lines API, blocking replay and saved-file notifications |
 | Native projections | `crates/broker/src/native.rs` | VectorCraft/FigCraft command clients, placement, applied baselines, conflict snapshots and reconnect |
 | External integration | `sdk/`, `manifests/`, `examples/` | Python client, MCP facade, manifest schema and generated-app reference |
+| Optional launcher view | [launcher PR #1239](https://github.com/storytold/craft-launcher/pull/1239) | Read-only binding status in existing app details; explicit connection, transient credentials, feature off by default |
 | Atomic blob writes | shared `craft-atomic` dependency | Pinned upstream staging/fsync/replace primitives; preserved licenses and provenance |
 
 ## Commit and update flow
@@ -21,4 +22,4 @@ The broker's durable commit and each application's UI/save completion are separa
 
 Applications own native models, serializers, renderers and standalone editing. Only rectangle name/opacity synchronize today; placement initializes axis-aligned bounds. Opaque snapshots preserve source data without promising its editability in another app.
 
-The broker authenticates a trusted-project credential and confines native paths. Stock app ports retain their documented authentication/conditional-write limitations. A separate native worker keeps slow application I/O outside the metadata lock. Legacy routing assumes the bound file is active; the authenticated candidate FigCraft profile routes by live document id and supports conditional writes and unsaved command events. Other mutation paths, richer semantic contracts and launcher integration remain open. There is no distributed ACID guarantee across native files, no required cloud and no installed-app modification in this repository.
+The broker authenticates a trusted-project credential and confines native paths. Stock app ports retain their documented authentication/conditional-write limitations. A separate native worker keeps slow application I/O outside the metadata lock. Legacy routing assumes the bound file is active; the authenticated candidate FigCraft profile routes by live document id and supports conditional writes and unsaved command events. Other mutation paths, richer semantic contracts and launcher discovery/asset browsing remain open. There is no distributed ACID guarantee across native files, no required cloud and no installed-app modification in this repository.

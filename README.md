@@ -10,6 +10,7 @@ Shared core proposal: [storytold/craft-libs#601](https://github.com/storytold/cr
 - Native VectorCraft 0.21.0 ↔ FigCraft 0.15.0 rectangles: name/opacity synchronization on save and editable placement from axis-aligned bounds. Paints, paths, rotation, typography and effects are not transferred.
 - Optional candidate FigCraft integration for unsaved command notifications and conditional writes, with explicit capability checks and the upstream control-token protocol. Stock installed apps keep the saved-file path.
 - Capability manifests, Python SDK, generated-app registration example and stdio MCP facade. Native I/O runs outside the metadata lock; committed heads remain readable while projection waits.
+- Optional read-only ArtCraft Launcher binding status, proposed in [launcher PR #1239](https://github.com/storytold/craft-launcher/pull/1239). It uses the existing app details/backend boundary and is off by default.
 
 Broker metadata commits and native UI updates are separate. Native documents and opaque snapshots are retained; this is not universal lossless interchange. Only the optional candidate native endpoint has conditional writes; the legacy VectorCraft endpoint retains its documented inspect/apply race. Use owned synthetic sessions until integration hardening is complete.
 
@@ -28,7 +29,7 @@ The broker accepts `PROJECT_ROOT [PORT]`; supply a random project bearer credent
 
 ## Collaboration and status
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [scoped follow-up drafts](docs/CONTRIBUTOR_ISSUES.md) and [verification](docs/VERIFICATION.md). Launcher integration, additional adapters, richer semantic fidelity, stable schemas/migrations, per-application permissions and production rollout remain unfinished. Existing upstream owners include craft-libs [command hooks #431](https://github.com/storytold/craft-libs/pull/431), [IPC #433](https://github.com/storytold/craft-libs/pull/433) and [document linking #59](https://github.com/storytold/craft-libs/issues/59); this prototype does not replace those proposals.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), [scoped contributor work](docs/CONTRIBUTOR_ISSUES.md) and [verification](docs/VERIFICATION.md). Launcher discovery/asset browsing, additional adapters, richer semantic fidelity, stable schemas/migrations, per-application permissions and production rollout remain unfinished. Existing upstream owners include craft-libs [command hooks #431](https://github.com/storytold/craft-libs/pull/431), [IPC #433](https://github.com/storytold/craft-libs/pull/433) and [document linking #59](https://github.com/storytold/craft-libs/issues/59); this prototype does not replace those proposals.
 
 Source-only contribution. Binary redistribution notices have not received a complete all-target review. Original private implementation history and raw machine-local evidence are intentionally excluded from this clean publication repository.
 

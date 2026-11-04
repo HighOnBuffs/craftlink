@@ -1,6 +1,14 @@
-# Five contributor issue drafts
+# Contributor work and upstream tracking
 
-These are local drafts ready to copy into GitHub after publication approval. No remote issues have been created. Each is independently scoped against baseline `8248da4`; no issue depends on completing another draft. Upstream source changes require that repository's current contributor rules.
+The scopes below describe small contributions. Check their current public tracking before starting, and follow the target repository's contributor rules. Implemented portions remain proposals until upstream review and merge.
+
+- VectorCraft hooks/conditional writes: [#5675](https://github.com/storytold/vectorcraft/issues/5675).
+- FigCraft events/conditional execution: [PR #1995](https://github.com/storytold/figcraft/pull/1995). Native auth remains owned by existing [PR #1473](https://github.com/storytold/figcraft/pull/1473); isolated composition is documented in [verification](VERIFICATION.md).
+- PhotoCraft read-only layer adapter: [#11321](https://github.com/storytold/photocraft/issues/11321). Publishing read-only snapshots still needs a separate capability from semantic write permission.
+- Launcher read-only status: [PR #1239](https://github.com/storytold/craft-launcher/pull/1239), verified as documented; broader discovery/asset browsing remains open.
+- Solid sRGB fill: [#1](https://github.com/HighOnBuffs/craftlink/issues/1).
+
+Shared core boundary: [craft-libs #600](https://github.com/storytold/craft-libs/issues/600) / [PR #601](https://github.com/storytold/craft-libs/pull/601). Craft Anything generation seam: [#852](https://github.com/storytold/craft-anything/issues/852); its roadmap-claim/draft-PR contribution gate must precede host changes.
 
 ## 1. Emit unsaved rectangle-property events in VectorCraft
 
