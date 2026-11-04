@@ -20,3 +20,11 @@ as a new authentication implementation. FigCraft's MIT license is retained at
 docs/licenses/figcraft-LICENSE-MIT; upstream source/attribution applies to the
 extracted logic. The adaptation uses current server signatures and the existing
 settings-directory owner. This patch is for synthetic candidate testing only.
+
+docs/vectorcraft-native-auth-test.patch composes native authentication from
+storytold/vectorcraft PR #4623, commit
+7613c15245af5bf6b5bdc28b0a04ada6515cc6bb (contribution by @mockydevs).
+This is a native test subset with callback-signature adaptations, not a new
+authentication implementation or a replacement PR. VectorCraft is MIT OR
+Apache-2.0; its MIT license is retained at docs/licenses/vectorcraft-LICENSE-MIT.
+No upstream CLI authentication adoption is claimed by this test composition.

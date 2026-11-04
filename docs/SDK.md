@@ -46,18 +46,26 @@ For native rectangles, value is exactly `{name: string, opacity: number from 0 t
 ### Optional live native profile
 
 `bind_native` and `reconnect` accept `live: true` and `token_file` for a compatible
-candidate FigCraft. Live mode fails closed without a credential file inside the
+candidate FigCraft or VectorCraft. Live mode fails closed without a credential file inside the
 explicit project root and runtime `conditionalExecute: 1` / `documentChangeEvents: 1`
 capabilities. Authentication uses the first-request `auth` protocol proposed by
-FigCraft #1473. Native credential contents are never returned or logged.
+FigCraft #1473 / VectorCraft #4623. Native credential contents are never returned or logged.
 
 The adapter subscribes to the existing `events.poll` document topic, coalesces
 invalidation, and inspects current semantic properties. It retains immutable full
-native bytes for an actual unsaved semantic revision. It routes by the native live
-document id and sends `{expected: {document, revision}}` with property writes.
+native bytes for an actual unsaved semantic revision. Snapshot export is guarded
+at the observed revision; extra revision movement rejects A→B→A capture. FigCraft's
+verified byte-copy bookkeeping advances its revision once, which the adapter
+accounts for explicitly. Property writes carry `{expected: {document, revision}}`.
+FigCraft routes by live document ID; VectorCraft requires that ID to remain the
+active document and rejects other tabs. A completed pending projection survives
+broker interruption without becoming a new local edit; explicit reconnect also
+retires the old subscription when a native process reuses its port/ID.
 Native ids/revisions are process-local, distinct from CraftLink UUIDs. Reconnect
 refreshes them. Live projection keeps the receiver unsaved; saving stays an explicit
-native action. Stock apps keep their previous saved-file adapter behavior.
+native action. Use VectorCraft `app.save {wait:true}` before closing: native
+background-save acknowledgement precedes completed file IO. Stock apps keep their
+previous saved-file adapter behavior. Exact candidate pins/reproduction: [VECTOR_LIVE.md](VECTOR_LIVE.md).
 
 Committed metadata responses no longer wait for native projection. Native work
 runs on a separate bounded worker queue/SQLite connection, so a stalled editor does

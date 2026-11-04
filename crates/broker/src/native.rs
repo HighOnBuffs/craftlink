@@ -204,10 +204,11 @@ fn read_state(b: &Binding) -> Result<(Value, Option<(u64, u64)>)> {
     }
     let token = doc
         .get("id")
+        .or_else(|| doc.get("uid"))
         .and_then(Value::as_u64)
         .zip(doc.get("revision").and_then(Value::as_u64));
     if b.live
-        && (b.profile != "figcraft"
+        && (!["figcraft", "vectorcraft"].contains(&b.profile.as_str())
             || token.is_none()
             || doc
                 .pointer("/capabilities/conditionalExecute")
@@ -219,7 +220,7 @@ fn read_state(b: &Binding) -> Result<(Value, Option<(u64, u64)>)> {
                 != Some(1))
     {
         return Err(Error::Capability(
-            "live mode requires FigCraft document events and revision guards".into(),
+            "live mode requires verified document events and revision guards".into(),
         ));
     }
     Ok((
@@ -259,25 +260,21 @@ fn write(b: &Binding, value: &Value, expected: Option<(u64, u64)>) -> Result<()>
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| fail("name required"))?;
-    match b.profile.as_str() {
+    let mut params = match b.profile.as_str() {
         "vectorcraft" => {
-            command(
-                b,
-                "object.setProps",
-                json!({"ids":[b.node],"name":name,"opacity":opacity*100.0}),
-            )?;
+            json!({"command":"object.setProps","params":{"ids":[b.node],"name":name,"opacity":opacity*100.0}})
         }
         "figcraft" => {
-            let mut params = json!({"command":"node.set","params":{"ids":[b.node],"props":{"name":name,"opacity":opacity}}});
-            if b.live {
-                let (document, revision) = expected
-                    .ok_or_else(|| Error::Capability("conditional native token required".into()))?;
-                params["expected"] = json!({"document":document,"revision":revision});
-            }
-            bound_call(b, "engine.execute", params)?;
+            json!({"command":"node.set","params":{"ids":[b.node],"props":{"name":name,"opacity":opacity}}})
         }
         _ => return Err(Error::Capability("native profile".into())),
+    };
+    if b.live {
+        let (document, revision) = expected
+            .ok_or_else(|| Error::Capability("conditional native token required".into()))?;
+        params["expected"] = json!({"document":document,"revision":revision});
     }
+    bound_call(b, "engine.execute", params)?;
     Ok(())
 }
 impl Runtime {
@@ -506,14 +503,20 @@ impl Runtime {
         }
         self.store.put_blob(&std::fs::read(path).map_err(fail)?)
     }
-    fn live_snapshot(&self, b: &Binding) -> Result<String> {
+    fn live_snapshot(&self, b: &Binding, expected: Option<(u64, u64)>) -> Result<String> {
         // Conflict snapshots retain unsaved native features too, using the apps' copy APIs.
         use base64::Engine;
-        let exported = match b.profile.as_str() {
-            "vectorcraft" => command(b, "file.saveCopy", json!({}))?,
-            "figcraft" => command(b, "file.saveAs", json!({"data":true}))?,
+        let mut request = match b.profile.as_str() {
+            "vectorcraft" => json!({"command":"file.saveCopy","params":{}}),
+            "figcraft" => json!({"command":"file.saveAs","params":{"data":true}}),
             _ => return Err(Error::Capability("native snapshot profile".into())),
         };
+        if b.live {
+            let (document, revision) = expected
+                .ok_or_else(|| Error::Capability("snapshot requires native revision".into()))?;
+            request["expected"] = json!({"document":document,"revision":revision});
+        }
+        let exported = bound_call(b, "engine.execute", request)?;
         let encoded = exported
             .get("dataBase64")
             .or_else(|| exported.get("data"))
@@ -529,7 +532,7 @@ impl Runtime {
     }
     fn conflict(&mut self, b: &mut Binding, live: &Value, head: &Object) -> Result<()> {
         let native = self.saved_snapshot(b)?;
-        let live_native = self.live_snapshot(b)?;
+        let live_native = self.live_snapshot(b, read_state(b)?.1)?;
         self.store.record_conflict(&json!({"binding":b,"local":live,"committed":head,"last_saved_native":native,"live_native":live_native}),"native properties differ from baseline and committed revision")?;
         b.status = "conflicted".into();
         b.detail = Some(
@@ -550,11 +553,14 @@ impl Runtime {
         if !b.enabled || b.status == "conflicted" {
             return Ok(());
         }
+        // Saved-file notifications for live bindings must capture the current
+        // unsaved native state too, rather than pair it with an older saved blob.
+        let unsaved = unsaved || b.live;
         let hash = self.saved_snapshot(&b)?;
         if !unsaved && hash == b.observed_hash {
             return Ok(());
         }
-        let live = read(&b)?;
+        let (live, observed_revision) = read_state(&b)?;
         let head = self.store.object(b.object)?;
         if same(&live, &head.value) {
             b.baseline = head.value;
@@ -562,15 +568,40 @@ impl Runtime {
             b.observed_hash = hash;
             b.pending = None;
             b.status = "current".into();
+        } else if b
+            .pending
+            .as_ref()
+            .is_some_and(|pending| same(pending, &live))
+        {
+            // The process stopped after applying our durable intent but before
+            // recording its receipt. This is an acknowledged old projection,
+            // not a new edit competing with a newer committed/offline source.
+            b.baseline = live;
+            b.pending = None;
+            b.status = "stale".into();
+            b.detail = None;
         } else if same(&live, &b.baseline) {
             b.observed_hash = hash;
         } else if same(&head.value, &b.baseline) {
             let payload = if unsaved {
-                let payload = self.live_snapshot(&b)?;
-                if !same(&read(&b)?, &live) {
+                let payload = self.live_snapshot(&b, observed_revision)?;
+                let (after, captured_revision) = read_state(&b)?;
+                // FigCraft v1 command bookkeeping advances even for its byte-only
+                // copy. The expected guard pins export to the observed document;
+                // any additional revision movement still rejects A->B->A capture.
+                let expected_after = if b.profile == "figcraft" {
+                    observed_revision
+                        .and_then(|(doc, revision)| revision.checked_add(1).map(|r| (doc, r)))
+                } else {
+                    observed_revision
+                };
+                if !same(&after, &live)
+                    || expected_after.is_none()
+                    || expected_after != captured_revision
+                {
                     self.store.record_conflict(
                         &json!({"binding":b.id,"observed":live,"live_native":payload}),
-                        "native value changed while capturing its unsaved snapshot",
+                        "native document/revision changed while capturing its unsaved snapshot",
                     )?;
                     return Err(Error::Conflict(
                         "native edit changed during snapshot capture; intent retained".into(),

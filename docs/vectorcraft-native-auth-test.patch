@@ -1,0 +1,750 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index aabd6684a..2b17d5add 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -6093,6 +6093,7 @@ dependencies = [
+  "craft-window",
+  "eframe",
+  "egui",
++ "getrandom 0.4.3",
+  "image",
+  "log",
+  "muda",
+diff --git a/apps/vectorcraft/Cargo.toml b/apps/vectorcraft/Cargo.toml
+index f46213231..84d9a1d56 100644
+--- a/apps/vectorcraft/Cargo.toml
++++ b/apps/vectorcraft/Cargo.toml
+@@ -28,6 +28,9 @@ log = { workspace = true }
+ chrono = { workspace = true }
+ 
+ [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++# The control channel's per-launch token (src/control_server.rs, #3603). MIT OR Apache-2.0, already
++# in Cargo.lock through vectorcraft-pdf.
++getrandom = "0.4"
+ rfd = { workspace = true }
+ # wayland-data-control: native Wayland clipboard (Linux; X11 through XWayland only sees what X11 apps copied).
+ arboard = { workspace = true, features = ["image-data", "wayland-data-control"] }
+diff --git a/apps/vectorcraft/src/control_server.rs b/apps/vectorcraft/src/control_server.rs
+index e750375af..e52189c1d 100644
+--- a/apps/vectorcraft/src/control_server.rs
++++ b/apps/vectorcraft/src/control_server.rs
+@@ -1,6 +1,11 @@
+ //! Loopback JSON-lines control server: one request per line, one reply per line.
+ //! This is the transport the MCP server (`vectorcraft mcp --connect`) wraps.
+ //!
++//! Every connection starts with `{"method": "auth", "params": {"token": …}}` carrying the
++//! per-launch token ([`vectorcraft_engine::control_auth`], #3603): the port is reachable by every
++//! process and user on the machine, so without the token, which only the user's own files hold,
++//! nothing is run. A missing or wrong token gets one error reply and the connection is closed.
++//!
+ //! The server only ever reads requests: a line that is not a JSON object with a string `method`
+ //! (an HTTP request line from a browser's cross-origin `fetch`, a stray `nc`, binary junk) gets
+ //! one error reply and the connection is closed, so nothing after it is executed. Lines are
+@@ -9,12 +14,14 @@
+ 
+ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+ use std::net::{TcpListener, TcpStream};
++use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::mpsc::{Receiver, Sender, channel};
+ use std::time::Duration;
+ 
+ use serde_json::{Value, json};
++use vectorcraft_engine::control_auth;
+ use vectorcraft_ui_egui::ControlRequest;
+ 
+ #[path = "control_deadlines.rs"]
+@@ -57,7 +64,37 @@ impl Default for ConnectionTimeouts {
+     }
+ }
+ 
+-pub fn start(port: u16, ctx: egui::Context, changes: Arc<vectorcraft_engine::changes::DocumentChanges>) -> Receiver<ControlRequest> {
++/// The token connections must authenticate with, and where to write it once the port is ours.
++pub struct ControlToken {
++    pub token: String,
++    /// The file to write the token to (a generated one); `None` when the user supplied it.
++    pub file: Option<PathBuf>,
++}
++
++/// The token for a control server on `port`: the one in `VECTORCRAFT_CONTROL_TOKEN` when set,
++/// else a fresh one from the system's random source, to be written next to the settings (or to
++/// `VECTORCRAFT_CONTROL_TOKEN_FILE`) for clients to read.
++pub fn token_for(port: u16, env_token: Option<std::ffi::OsString>, token_file: Option<PathBuf>) -> Result<ControlToken, String> {
++    if let Some(token) = env_token.filter(|v| !v.is_empty()) {
++        let env = control_auth::TOKEN_ENV;
++        let token = token.into_string().map_err(|_| format!("{env} is not text"))?;
++        let token = control_auth::validate_token(&token).map_err(|e| format!("{env}: {e}"))?;
++        return Ok(ControlToken { token, file: None });
++    }
++    let mut bytes = [0u8; control_auth::TOKEN_BYTES];
++    getrandom::fill(&mut bytes).map_err(|e| format!("cannot make a control token: {e}"))?;
++    let file = token_file.ok_or_else(|| {
++        format!("no folder to keep the control token for port {port} in: set {} or {}", control_auth::TOKEN_FILE_ENV, control_auth::TOKEN_ENV)
++    })?;
++    Ok(ControlToken { token: control_auth::token_from_bytes(&bytes), file: Some(file) })
++}
++
++pub fn start(
++    port: u16,
++    token: ControlToken,
++    ctx: egui::Context,
++    changes: Arc<vectorcraft_engine::changes::DocumentChanges>,
++) -> Receiver<ControlRequest> {
+     let (tx, rx) = channel::<ControlRequest>();
+     let listener = match TcpListener::bind(("127.0.0.1", port)) {
+         Ok(l) => l,
+@@ -66,10 +103,24 @@ pub fn start(port: u16, ctx: egui::Context, changes: Arc<vectorcraft_engine::cha
+             return rx;
+         }
+     };
+-    eprintln!("vectorcraft: control server listening on 127.0.0.1:{port}");
++    // Written once the port is ours, so a second app that can't bind it leaves the first one's token.
++    let token_note = match &token.file {
++        Some(path) => match control_auth::write_token_file(path, &token.token) {
++            Ok(()) => format!("token in {}", path.display()),
++            Err(e) => {
++                // Without the file no client can authenticate: don't leave a port open nobody can use.
++                log::error!("control token not written: {e}");
++                eprintln!("vectorcraft: control server not started: the control token could not be written ({e})");
++                return rx;
++            }
++        },
++        None => format!("token from {}", control_auth::TOKEN_ENV),
++    };
++    eprintln!("vectorcraft: control server listening on 127.0.0.1:{port} ({token_note})");
+     #[cfg(target_os = "macos")]
+     keep_answering();
+-    std::thread::spawn(move || accept_loop(listener, tx, ctx, changes));
++    let token: Arc<str> = token.token.into();
++    std::thread::spawn(move || accept_loop(listener, tx, ctx, token, changes));
+     rx
+ }
+ 
+@@ -92,7 +143,13 @@ fn keep_answering() {
+     std::mem::forget(activity);
+ }
+ 
+-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, changes: Arc<vectorcraft_engine::changes::DocumentChanges>) {
++fn accept_loop(
++    listener: TcpListener,
++    tx: Sender<ControlRequest>,
++    ctx: egui::Context,
++    token: Arc<str>,
++    changes: Arc<vectorcraft_engine::changes::DocumentChanges>,
++) {
+     let open = Arc::new(AtomicUsize::new(0));
+     for stream in listener.incoming().flatten() {
+         let Some(slot) = acquire_slot(&open) else {
+@@ -103,7 +160,7 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
+             }
+             continue;
+         };
+-        if let Err(e) = spawn_connection(stream, tx.clone(), ctx.clone(), slot, ConnectionTimeouts::default(), changes.clone()) {
++        if let Err(e) = spawn_connection(stream, tx.clone(), ctx.clone(), Arc::clone(&token), slot, ConnectionTimeouts::default(), changes.clone()) {
+             eprintln!("vectorcraft: control worker failed to start: {e}");
+         }
+     }
+@@ -135,13 +192,14 @@ fn spawn_connection(
+     stream: TcpStream,
+     tx: Sender<ControlRequest>,
+     ctx: egui::Context,
++    token: Arc<str>,
+     slot: ConnectionSlot,
+     timeouts: ConnectionTimeouts,
+     changes: Arc<vectorcraft_engine::changes::DocumentChanges>,
+ ) -> std::io::Result<std::thread::JoinHandle<()>> {
+     std::thread::Builder::new().name("vectorcraft-control".into()).spawn(move || {
+         let _slot = slot;
+-        serve_socket(stream, timeouts, |method, params| {
++        serve_socket(stream, timeouts, &token, |method, params| {
+             if method == "events.poll" {
+                 return Some(changes.request(&params));
+             }
+@@ -154,7 +212,7 @@ fn spawn_connection(
+     })
+ }
+ 
+-fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, handle: impl FnMut(String, Value) -> Option<Value>) {
++fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, token: &str, handle: impl FnMut(String, Value) -> Option<Value>) {
+     let Ok(read) = stream.try_clone() else { return };
+     let read = DeadlineReader::new(read, timeouts.idle, timeouts.line);
+     // Replies reach the writer in [`REPLY_CHUNK`] pieces ([`write_line`]), so checking the remaining
+@@ -163,6 +221,7 @@ fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, handle: impl Fn
+     serve_lines_with(
+         read,
+         out,
++        Some(token),
+         handle,
+         |reader| {
+             let buffered = !reader.buffer().is_empty();
+@@ -192,6 +251,9 @@ fn parse_line(bytes: &[u8]) -> Line {
+     if text.is_empty() {
+         return Line::Blank;
+     }
++    if looks_like_http(text) {
++        return Line::Reject("HTTP requests are not accepted: this port reads JSON control requests, one per line; closing the connection".into());
++    }
+     let msg = match serde_json::from_str::<Value>(text) {
+         Ok(v) => v,
+         Err(e) => return Line::Reject(format!("bad JSON ({e}); expected one JSON request object per line; closing the connection")),
+@@ -209,6 +271,17 @@ fn parse_line(bytes: &[u8]) -> Line {
+     }
+ }
+ 
++/// Whether `line` is an HTTP request line (`POST / HTTP/1.1`), as a browser's `fetch` or a page
++/// rebound to 127.0.0.1 sends: a method of capital letters, a target, and an HTTP version.
++fn looks_like_http(line: &str) -> bool {
++    let mut words = line.split_ascii_whitespace();
++    let (Some(method), Some(_target), Some(version)) = (words.next(), words.next(), words.next()) else { return false };
++    !method.is_empty() && method.bytes().all(|b| b.is_ascii_uppercase()) && version.starts_with("HTTP/")
++}
++
++/// The refusal of a first request that isn't `auth` with the app's token.
++const AUTH_REQUIRED: &str = "authentication required: send {\"method\": \"auth\", \"params\": {\"token\": …}} first, with the token the app wrote to control-<port>.token next to its settings (or the one in VECTORCRAFT_CONTROL_TOKEN); closing the connection";
++
+ /// Read one `\n`-terminated line of at most `max` bytes into `buf` (newline stripped).
+ /// `Ok(false)` at end of stream; `Err` when the line is too long or the read fails.
+ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> Result<bool, String> {
+@@ -249,18 +322,28 @@ fn write_line(out: &mut impl Write, v: &Value) -> std::io::Result<()> {
+ /// returns the reply object (the request's `id` is added here).
+ #[cfg(test)]
+ fn serve_lines<R: Read, W: Write>(read: R, out: W, handle: impl FnMut(String, Value) -> Option<Value>) {
+-    serve_lines_with(read, out, handle, |_| Ok(()), |_| Ok(()));
++    serve_lines_with(read, out, None, handle, |_| Ok(()), |_| Ok(()));
++}
++
++/// As [`serve_lines`], for a connection that must authenticate with `token` first.
++#[cfg(test)]
++fn serve_lines_authenticated<R: Read, W: Write>(read: R, out: W, token: &str, handle: impl FnMut(String, Value) -> Option<Value>) {
++    serve_lines_with(read, out, Some(token), handle, |_| Ok(()), |_| Ok(()));
+ }
+ 
++/// `token`: the first request must be `auth` with it, or nothing runs and the connection closes.
++/// `None` (tests of what follows authentication) serves requests from the first line.
+ fn serve_lines_with<R: Read, W: Write>(
+     read: R,
+     mut out: W,
++    token: Option<&str>,
+     mut handle: impl FnMut(String, Value) -> Option<Value>,
+     mut begin_line: impl FnMut(&mut BufReader<R>) -> std::io::Result<()>,
+     mut begin_reply: impl FnMut(&mut W) -> std::io::Result<()>,
+ ) {
+     let mut reader = BufReader::new(read);
+     let mut buf = Vec::new();
++    let mut authenticated = token.is_none();
+     loop {
+         if begin_line(&mut reader).is_err() {
+             return;
+@@ -274,8 +357,22 @@ fn serve_lines_with<R: Read, W: Write>(
+             Ok(true) => match parse_line(&buf) {
+                 Line::Blank => continue,
+                 Line::Reject(e) => e,
++                // Nothing runs before the connection proved it holds the token.
++                Line::Request { method, params, .. }
++                    if !authenticated && !token.is_some_and(|t| control_auth::is_valid_auth(&method, &params, t)) =>
++                {
++                    AUTH_REQUIRED.to_string()
++                }
+                 Line::Request { id, method, params } => {
+-                    let Some(mut r) = handle(method, params) else { return };
++                    let reply = if !authenticated {
++                        authenticated = true;
++                        Some(json!({"ok": true, "result": {"authenticated": true}}))
++                    } else if token.is_some() && method == control_auth::AUTH_METHOD {
++                        Some(json!({"ok": false, "error": "already authenticated"}))
++                    } else {
++                        handle(method, params)
++                    };
++                    let Some(mut r) = reply else { return };
+                     if let Some(o) = r.as_object_mut() {
+                         o.insert("id".into(), id);
+                     }
+diff --git a/apps/vectorcraft/src/control_server/tests.rs b/apps/vectorcraft/src/control_server/tests.rs
+index 957df2022..629f516e6 100644
+--- a/apps/vectorcraft/src/control_server/tests.rs
++++ b/apps/vectorcraft/src/control_server/tests.rs
+@@ -1,5 +1,13 @@
+ use super::*;
+ 
++/// The token the socket fixtures' server expects.
++const TOKEN: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
++
++/// The `auth` request line with [`TOKEN`].
++fn auth_line() -> String {
++    format!("{}\n", control_auth::auth_request(TOKEN))
++}
++
+ fn short_timeouts() -> ConnectionTimeouts {
+     ConnectionTimeouts { idle: Duration::from_millis(150), line: Duration::from_millis(120), write: Duration::from_millis(150) }
+ }
+@@ -28,7 +36,7 @@ fn socket_fixture(
+     let worker = std::thread::spawn(move || {
+         let (stream, _) = listener.accept().unwrap();
+         socket2::SockRef::from(&stream).set_send_buffer_size(4096).unwrap();
+-        serve_socket(stream, timeouts, handle);
++        serve_socket(stream, timeouts, TOKEN, handle);
+         finished.send(()).unwrap();
+     });
+     let client = TcpStream::connect(addr).unwrap();
+@@ -117,7 +125,7 @@ fn trickled_control_line_has_an_absolute_deadline() {
+ fn a_nonreading_control_peer_cannot_retain_the_writer() {
+     let payload = "x".repeat(2 * 1024 * 1024);
+     let (mut client, done, worker) = socket_fixture(short_timeouts(), move |_, _| Some(json!({"ok": true, "result": payload})));
+-    client.write_all(b"{\"method\":\"large\"}\n").unwrap();
++    client.write_all(format!("{}{{\"method\":\"large\"}}\n", auth_line()).as_bytes()).unwrap();
+     expect_socket_deadline(client, done, worker);
+ }
+ 
+@@ -135,6 +143,10 @@ fn persistent_control_requests_get_fresh_transport_deadlines() {
+         Some(json!({"ok": true}))
+     });
+     let mut reader = BufReader::new(client.try_clone().unwrap());
++    client.write_all(auth_line().as_bytes()).unwrap();
++    let mut line = String::new();
++    reader.read_line(&mut line).unwrap();
++    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["ok"], true, "{line}");
+     for id in [1, 2] {
+         // The client sends each line in one write. `writeln!` on the socket sends the JSON in many
+         // small writes, and when the machine is busy, a pause of more than the line deadline between
+@@ -152,9 +164,13 @@ fn persistent_control_requests_get_fresh_transport_deadlines() {
+ #[test]
+ fn buffered_partial_control_line_also_expires() {
+     let (mut client, done, worker) = socket_fixture(line_timeouts(), |_, _| Some(json!({"ok": true})));
+-    client.write_all(b"{\"id\":1,\"method\":\"inspect\"}\n{").unwrap();
++    client.write_all(format!("{}{{\"id\":1,\"method\":\"inspect\"}}\n{{", auth_line()).as_bytes()).unwrap();
++    let mut reader = BufReader::new(client.try_clone().unwrap());
+     let mut line = String::new();
+-    BufReader::new(client.try_clone().unwrap()).read_line(&mut line).unwrap();
++    reader.read_line(&mut line).unwrap();
++    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], "auth");
++    line.clear();
++    reader.read_line(&mut line).unwrap();
+     assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 1);
+     expect_socket_deadline(client, done, worker);
+ }
+@@ -169,7 +185,7 @@ fn timed_out_worker_returns_its_connection_slot() {
+     let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+     let (stream, _) = listener.accept().unwrap();
+     let (tx, _rx) = channel();
+-    let worker = spawn_connection(stream, tx, egui::Context::default(), slot, short_timeouts(), Default::default()).unwrap();
++    let worker = spawn_connection(stream, tx, egui::Context::default(), TOKEN.into(), slot, short_timeouts(), Default::default()).unwrap();
+     let start = std::time::Instant::now();
+     while open.load(Ordering::SeqCst) == MAX_CONNECTIONS && start.elapsed() < WAIT {
+         std::thread::sleep(Duration::from_millis(10));
+@@ -387,7 +403,7 @@ fn extra_connections_are_refused() {
+     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+     let addr = listener.local_addr().unwrap();
+     let (tx, _rx) = channel::<ControlRequest>();
+-    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), Default::default()));
++    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), TOKEN.into(), Default::default()));
+     // Idle connections are accepted in order and held open.
+     let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
+     let mut extra = TcpStream::connect(addr).unwrap();
+@@ -410,3 +426,121 @@ fn the_control_channel_keeps_the_app_at_full_priority_on_macos() {
+     assert!(!options.contains(NSActivityOptions::IdleSystemSleepDisabled), "the channel must not keep the Mac awake");
+     keep_answering();
+ }
++
++/// Serve `input` on a connection that must authenticate with [`TOKEN`]; the replies and the
++/// methods that ran.
++fn run_authenticated(input: &[u8]) -> (Vec<Value>, Vec<String>) {
++    let mut out = Vec::new();
++    let mut calls = Vec::new();
++    serve_lines_authenticated(input, &mut out, TOKEN, |m, _p| {
++        calls.push(m);
++        Some(json!({"ok": true, "result": null}))
++    });
++    let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect();
++    (replies, calls)
++}
++
++/// #3603: without the token, nothing runs: a request sent first, an `auth` without a token or
++/// with a wrong one, each gets one refusal and the connection is closed.
++#[test]
++fn a_missing_or_wrong_token_is_refused_and_closes_the_connection() {
++    let wrong = control_auth::auth_request(&"f".repeat(64));
++    let short = control_auth::auth_request("1234");
++    for first in [
++        json!({"id": 1, "method": "engine.execute", "params": {"command": "file.new"}}),
++        json!({"id": 1, "method": "auth"}),
++        json!({"id": 1, "method": "auth", "params": {"token": null}}),
++        wrong,
++        short,
++        // The right token on another method is no authentication either.
++        json!({"id": 1, "method": "ui.inspect", "params": {"token": TOKEN}}),
++    ] {
++        let input = format!("{first}\n{}{{\"method\":\"engine.execute\"}}\n", auth_line());
++        let (r, calls) = run_authenticated(input.as_bytes());
++        assert!(calls.is_empty(), "{first}: nothing may run: {calls:?}");
++        assert_eq!(r.len(), 1, "{first}: one refusal, then the connection closes: {r:?}");
++        assert_eq!(r[0]["ok"], false);
++        assert!(r[0]["error"].as_str().unwrap().starts_with("authentication required"), "{r:?}");
++    }
++}
++
++#[test]
++fn the_right_token_authenticates_the_connection() {
++    let input = format!("\n{}{{\"id\":2,\"method\":\"a\"}}\n{}{{\"id\":3,\"method\":\"b\"}}\n", auth_line(), auth_line());
++    let (r, calls) = run_authenticated(input.as_bytes());
++    assert_eq!(calls, ["a", "b"], "a repeated `auth` is not passed on as a method");
++    assert_eq!(r[0], json!({"id": "auth", "ok": true, "result": {"authenticated": true}}));
++    assert_eq!(r[1]["id"], 2);
++    assert_eq!(r[2], json!({"id": "auth", "ok": false, "error": "already authenticated"}));
++    assert_eq!(r[3]["id"], 3);
++    // Hex letters match in either case.
++    let upper = format!("{}\n{{\"method\":\"a\"}}\n", control_auth::auth_request(&TOKEN.to_uppercase()));
++    assert_eq!(run_authenticated(upper.as_bytes()).1, ["a"]);
++}
++
++/// #3603: a browser (a page's `fetch`, or one rebound to 127.0.0.1) is refused as HTTP before any
++/// token is asked for, and its body never runs, even when it carries the right token.
++#[test]
++fn an_http_request_is_refused_before_authentication() {
++    let body = format!("{}{{\"method\":\"engine.execute\"}}\n", auth_line());
++    for start in ["POST / HTTP/1.1", "GET /?x=1 HTTP/1.0", "OPTIONS * HTTP/1.1"] {
++        let http = format!("{start}\r\nHost: 127.0.0.1:7979\r\nOrigin: https://attacker.example\r\n\r\n{body}");
++        let (r, calls) = run_authenticated(http.as_bytes());
++        assert!(calls.is_empty(), "{start}: {calls:?}");
++        assert_eq!(r.len(), 1);
++        assert!(r[0]["error"].as_str().unwrap().starts_with("HTTP requests are not accepted"), "{r:?}");
++    }
++    assert!(!looks_like_http("{\"method\": \"a HTTP/1.1\"}"));
++}
++
++/// End to end over a socket: no token, then the right one on a new connection.
++#[test]
++fn a_socket_without_the_token_runs_nothing() {
++    let (mut client, done, worker) = socket_fixture(line_timeouts(), |_, _| panic!("nothing may run without the token"));
++    client.write_all(b"{\"id\":1,\"method\":\"app.save\",\"params\":{\"path\":\"/tmp/x\"}}\n").unwrap();
++    let mut text = String::new();
++    client.read_to_string(&mut text).unwrap();
++    assert!(text.contains("authentication required"), "{text}");
++    expect_socket_deadline(client, done, worker);
++
++    let (mut client, done, worker) = socket_fixture(line_timeouts(), |m, _| Some(json!({"ok": true, "result": m})));
++    client.write_all(format!("{}{{\"id\":1,\"method\":\"ui.inspect\"}}\n", auth_line()).as_bytes()).unwrap();
++    client.shutdown(std::net::Shutdown::Write).unwrap();
++    let mut text = String::new();
++    client.read_to_string(&mut text).unwrap();
++    let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
++    assert_eq!(lines, [json!({"id": "auth", "ok": true, "result": {"authenticated": true}}), json!({"id": 1, "ok": true, "result": "ui.inspect"})]);
++    expect_socket_deadline(client, done, worker);
++}
++
++#[test]
++fn a_supplied_token_is_used_and_a_generated_one_needs_a_file() {
++    let t = token_for(7979, Some(TOKEN.to_uppercase().into()), None).unwrap();
++    assert_eq!((t.token.as_str(), t.file), (TOKEN, None));
++    assert!(token_for(7979, Some("nope".into()), None).err().unwrap().contains("VECTORCRAFT_CONTROL_TOKEN"));
++    let file = std::path::PathBuf::from("control-7979.token");
++    let (a, b) = (token_for(7979, None, Some(file.clone())).unwrap(), token_for(7979, Some("".into()), Some(file.clone())).unwrap());
++    assert_eq!(a.file, Some(file));
++    assert!(control_auth::validate_token(&a.token).is_ok());
++    assert_ne!(a.token, b.token, "a fresh token per launch");
++    assert!(token_for(7979, None, None).is_err());
++}
++
++/// The server writes the token it generated, after binding, to a file only the user can read.
++#[test]
++fn the_generated_token_is_written_once_the_port_is_bound() {
++    let dir = std::env::temp_dir().join(format!("vectorcraft-control-server-token-{}", std::process::id()));
++    let path = dir.join("control.token");
++    let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
++    let token = token_for(port, None, Some(path.clone())).unwrap();
++    let expected = token.token.clone();
++    let _rx = start(port, token, egui::Context::default(), Default::default());
++    assert_eq!(control_auth::read_token_file(&path).unwrap(), expected);
++    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
++    c.set_read_timeout(Some(WAIT)).unwrap();
++    c.write_all(format!("{}\n", control_auth::auth_request(&expected)).as_bytes()).unwrap();
++    let mut line = String::new();
++    BufReader::new(c).read_line(&mut line).unwrap();
++    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["ok"], true, "{line}");
++    let _ = std::fs::remove_dir_all(dir);
++}
+diff --git a/apps/vectorcraft/src/main.rs b/apps/vectorcraft/src/main.rs
+index 600ad226d..15531049b 100644
+--- a/apps/vectorcraft/src/main.rs
++++ b/apps/vectorcraft/src/main.rs
+@@ -11,7 +11,9 @@
+ //!
+ //! `--control <port>` (or `VECTORCRAFT_CONTROL_PORT`; a port from 1 to 65535, or the app doesn't
+ //! start) starts a localhost JSON-lines control server:
+-//! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
++//! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`, after a first
++//! `{"method":"auth","params":{"token":…}}` with the per-launch token the app writes next to its
++//! settings (`control_server`, #3603).
+ //! See `vectorcraft_ui_egui::control` for the methods. `--automation-read-root` and
+ //! `--automation-write-root` (or `VECTORCRAFT_AUTOMATION_READ_ROOT` / `_WRITE_ROOT`) confine the
+ //! files its requests read and write (`vectorcraft_engine::file_access`); the person at the
+@@ -120,7 +122,9 @@ Opens the VectorCraft desktop app with the given files.
+ 
+ Options:
+   --control <port>               Start the localhost JSON-lines control server on <port>
+-                                 (or VECTORCRAFT_CONTROL_PORT)
++                                 (or VECTORCRAFT_CONTROL_PORT); clients authenticate with
++                                 the token written to control-<port>.token next to the
++                                 settings (or set VECTORCRAFT_CONTROL_TOKEN)
+   --automation-read-root <dir>   Confine the files control requests read to <dir>
+                                  (may be given more than once)
+   --automation-write-root <dir>  Confine the files control requests write to <dir>
+@@ -194,6 +198,21 @@ fn main() -> std::process::ExitCode {
+             }
+         },
+     };
++    // The control channel's key (#3603): a bad VECTORCRAFT_CONTROL_TOKEN keeps the app from starting
++    // rather than opening a port nobody can use.
++    let control_token = match control_port {
++        Some(port) => {
++            match control_server::token_for(port, std::env::var_os(vectorcraft_engine::control_auth::TOKEN_ENV), prefs_dir::control_token_path(port))
++            {
++                Ok(token) => Some(token),
++                Err(e) => {
++                    eprintln!("vectorcraft: {e}");
++                    return std::process::ExitCode::FAILURE;
++                }
++            }
++        }
++        None => None,
++    };
+     // Before desktop services, so every start-up warning is recorded (`logging`).
+     let logger = logging::install();
+     // Files opened from the file manager while VectorCraft runs open in its window (#4892). Before
+@@ -459,8 +478,8 @@ fn main() -> std::process::ExitCode {
+                     rs.device.set_device_lost_callback(move |reason, msg| loss.report(&ctx, format!("{reason:?}: {msg}")));
+                 }
+                 app.custom_titlebar = custom_titlebar;
+-                if let Some(port) = control_port {
+-                    let rx = control_server::start(port, cc.egui_ctx.clone(), app.session.changes.clone());
++                if let (Some(port), Some(token)) = (control_port, control_token) {
++                    let rx = control_server::start(port, token, cc.egui_ctx.clone(), app.session.changes.clone());
+                     app = app.with_control(rx).with_automation_roots(roots.clone());
+                     if let Some(roots) = &roots {
+                         // Everywhere the app doesn't say whose work it is (worker threads), the
+diff --git a/apps/vectorcraft/src/prefs_dir.rs b/apps/vectorcraft/src/prefs_dir.rs
+index 919a04455..0a1febd4d 100644
+--- a/apps/vectorcraft/src/prefs_dir.rs
++++ b/apps/vectorcraft/src/prefs_dir.rs
+@@ -24,6 +24,16 @@ pub fn install_fonts() {
+     }
+ }
+ 
++/// The file the app started with `--control <port>` writes its control token to, next to the
++/// settings, and `vectorcraft-cli mcp` reads it from (#3603). Not a preference: kept whether or not
++/// `VECTORCRAFT_NO_PREFS` is set. `VECTORCRAFT_CONTROL_TOKEN_FILE` names another file.
++pub fn control_token_path(port: u16) -> Option<PathBuf> {
++    if let Some(file) = std::env::var_os(vectorcraft_engine::control_auth::TOKEN_FILE_ENV).filter(|v| !v.is_empty()) {
++        return Some(PathBuf::from(file));
++    }
++    Some(prefs_path_for("VectorCraft", "vectorcraft")?.parent()?.join(format!("control-{port}.token")))
++}
++
+ /// The folder `name` next to the settings, for what the user keeps: none in a run without
+ /// preferences (`VECTORCRAFT_NO_PREFS`), which keeps nothing.
+ fn store_dir(name: &str) -> Option<PathBuf> {
+diff --git a/crates/engine/src/control_auth.rs b/crates/engine/src/control_auth.rs
+new file mode 100644
+index 000000000..75dbb8f66
+--- /dev/null
++++ b/crates/engine/src/control_auth.rs
+@@ -0,0 +1,187 @@
++//! The control channel's key (#3603): a per-launch 256-bit token the desktop app's loopback
++//! control port requires as the first request of every connection, so a process that can reach
++//! the port (another user on the machine, a sandboxed app, a web page) can't drive the app
++//! without also being able to read the user's files.
++//!
++//! The app generates the token at launch and writes it to a file only its user can read (or takes
++//! it from [`TOKEN_ENV`]); clients such as `vectorcraft-cli mcp` read it from the same file. The
++//! first line of a connection is `{"method": "auth", "params": {"token": "<64 hex digits>"}}`.
++//! See `docs/control-protocol.md`.
++
++use std::ffi::OsString;
++use std::io::Write;
++use std::path::{Path, PathBuf};
++
++use serde_json::{Value, json};
++
++/// The method of the first request on every control connection.
++pub const AUTH_METHOD: &str = "auth";
++/// Supplies the token instead of a generated one (the app) or the token file (a client).
++pub const TOKEN_ENV: &str = "VECTORCRAFT_CONTROL_TOKEN";
++/// Where the app writes the token it generates, and where a client reads it, instead of the
++/// default file next to the settings.
++pub const TOKEN_FILE_ENV: &str = "VECTORCRAFT_CONTROL_TOKEN_FILE";
++/// Random bytes in a token.
++pub const TOKEN_BYTES: usize = 32;
++/// Characters in a token: lowercase hexadecimal.
++pub const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2;
++/// Longest token file read (a token and a newline, with room for stray whitespace).
++const MAX_TOKEN_FILE: u64 = 4096;
++
++/// The token for `bytes`, as lowercase hexadecimal.
++pub fn token_from_bytes(bytes: &[u8; TOKEN_BYTES]) -> String {
++    const HEX: &[u8; 16] = b"0123456789abcdef";
++    bytes.iter().flat_map(|b| [HEX[usize::from(b >> 4)] as char, HEX[usize::from(b & 0x0f)] as char]).collect()
++}
++
++/// Accept only a token of [`TOKEN_HEX_LEN`] hexadecimal digits. Returns it lowercased.
++pub fn validate_token(token: &str) -> Result<String, String> {
++    let token = token.trim();
++    if token.len() != TOKEN_HEX_LEN || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
++        return Err(format!("a control token is {TOKEN_HEX_LEN} hexadecimal digits"));
++    }
++    Ok(token.to_ascii_lowercase())
++}
++
++/// Whether `supplied` is `expected`, compared without stopping at the first different byte, so the
++/// time taken says nothing about how much of a guess was right. Hex letters match in either case.
++pub fn token_matches(expected: &str, supplied: &str) -> bool {
++    if expected.len() != TOKEN_HEX_LEN || supplied.len() != TOKEN_HEX_LEN {
++        return false;
++    }
++    expected.bytes().zip(supplied.bytes()).fold(0u8, |diff, (a, b)| diff | (a.to_ascii_lowercase() ^ b.to_ascii_lowercase())) == 0
++}
++
++/// The first request a client sends on a connection.
++pub fn auth_request(token: &str) -> Value {
++    json!({"id": "auth", "method": AUTH_METHOD, "params": {"token": token}})
++}
++
++/// Whether the request `method` with `params` is an `auth` request carrying `expected`.
++pub fn is_valid_auth(method: &str, params: &Value, expected: &str) -> bool {
++    method == AUTH_METHOD && params.get("token").and_then(Value::as_str).is_some_and(|t| token_matches(expected, t))
++}
++
++/// Write `token` to `path` so only the current user can read it: a new file of mode 0600 (on
++/// Windows the per-user settings folder is the user's alone) moved into place, so a reader never
++/// sees half a token and a symbolic link at `path` is replaced, not followed.
++pub fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
++    let shown = path.display();
++    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or_else(|| format!("{shown}: no folder to keep the control token in"))?;
++    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
++    let name = path.file_name().ok_or_else(|| format!("{shown}: not a file name"))?;
++    let mut temp_name = OsString::from(".");
++    temp_name.push(name);
++    temp_name.push(format!(".{}.tmp", std::process::id()));
++    let temp = parent.join(temp_name);
++    // A leftover from a crashed start with the same process id.
++    let _ = std::fs::remove_file(&temp);
++    let mut options = std::fs::OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::OpenOptionsExt;
++        options.mode(0o600);
++    }
++    let written = options.open(&temp).and_then(|mut f| {
++        writeln!(f, "{token}")?;
++        f.sync_all()
++    });
++    if let Err(e) = written.and_then(|()| std::fs::rename(&temp, path)) {
++        let _ = std::fs::remove_file(&temp);
++        return Err(format!("{shown}: {e}"));
++    }
++    Ok(())
++}
++
++/// The token in the file at `path`.
++pub fn read_token_file(path: &Path) -> Result<String, String> {
++    let shown = path.display();
++    let file = std::fs::File::open(path).map_err(|e| format!("{shown}: {e}"))?;
++    let mut text = String::new();
++    std::io::Read::read_to_string(&mut std::io::Read::take(file, MAX_TOKEN_FILE), &mut text).map_err(|e| format!("{shown}: {e}"))?;
++    validate_token(&text).map_err(|e| format!("{shown}: {e}"))
++}
++
++/// The token a client sends: `env_token` ([`TOKEN_ENV`]) when set, else the one in the file
++/// `env_file` ([`TOKEN_FILE_ENV`]) names, else the one in `default_file`, the file the app writes
++/// next to its settings for the port. Empty variables count as unset.
++pub fn client_token(env_token: Option<OsString>, env_file: Option<OsString>, default_file: Option<PathBuf>) -> Result<String, String> {
++    if let Some(token) = env_token.filter(|v| !v.is_empty()) {
++        let token = token.into_string().map_err(|_| format!("{TOKEN_ENV} is not text"))?;
++        return validate_token(&token).map_err(|e| format!("{TOKEN_ENV}: {e}"));
++    }
++    let path = env_file
++        .filter(|v| !v.is_empty())
++        .map(PathBuf::from)
++        .or(default_file)
++        .ok_or_else(|| format!("no control token: set {TOKEN_ENV} or {TOKEN_FILE_ENV} (the app writes its token next to its settings)"))?;
++    read_token_file(&path).map_err(|e| format!("no control token ({e}); is the app running with --control on this port?"))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const T: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
++
++    #[test]
++    fn tokens_are_64_hex_digits_compared_whole() {
++        assert_eq!(token_from_bytes(&[0xab; TOKEN_BYTES]), "ab".repeat(TOKEN_BYTES));
++        assert_eq!(validate_token(&format!("{}\n", T.to_uppercase())).unwrap(), T);
++        for bad in ["", "abc", &T[1..], &format!("{T}0"), &format!("{}g", &T[1..])] {
++            assert!(validate_token(bad).is_err(), "{bad}");
++        }
++        assert!(token_matches(T, T));
++        assert!(token_matches(T, &T.to_uppercase()));
++        assert!(!token_matches(T, &format!("{}0", &T[1..])));
++        assert!(!token_matches(T, ""));
++        assert!(!token_matches("", ""), "an unset token matches nothing");
++    }
++
++    #[test]
++    fn only_an_auth_request_with_the_token_authenticates() {
++        let req = auth_request(T);
++        assert!(is_valid_auth(req["method"].as_str().unwrap(), &req["params"], T));
++        assert!(!is_valid_auth("auth", &json!({"token": "0".repeat(64)}), T));
++        assert!(!is_valid_auth("auth", &json!({}), T));
++        assert!(!is_valid_auth("auth", &json!({"token": 5}), T));
++        assert!(!is_valid_auth("ui.inspect", &json!({"token": T}), T));
++    }
++
++    #[test]
++    fn a_token_file_is_private_and_read_back() {
++        let dir = vectorcraft_testkit::temp_dir("control-token");
++        let path = dir.join("sub").join("control-7979.token");
++        write_token_file(&path, T).unwrap();
++        assert_eq!(read_token_file(&path).unwrap(), T);
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
++        }
++        // A new launch replaces it.
++        let other = "f".repeat(64);
++        write_token_file(&path, &other).unwrap();
++        assert_eq!(read_token_file(&path).unwrap(), other);
++        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1, "no temporary file left behind");
++    }
++
++    #[test]
++    fn a_client_takes_the_variable_then_the_named_file_then_the_default_file() {
++        let dir = vectorcraft_testkit::temp_dir("control-client-token");
++        let (named, default) = (dir.join("named.token"), dir.join("default.token"));
++        write_token_file(&named, T).unwrap();
++        write_token_file(&default, &"e".repeat(64)).unwrap();
++        let other = "d".repeat(64);
++        assert_eq!(client_token(Some(other.clone().into()), Some(named.clone().into()), Some(default.clone())).unwrap(), other);
++        assert_eq!(client_token(Some("".into()), Some(named.clone().into()), Some(default.clone())).unwrap(), T);
++        assert_eq!(client_token(None, Some("".into()), Some(default.clone())).unwrap(), "e".repeat(64));
++        assert!(client_token(Some("short".into()), None, Some(default)).unwrap_err().contains(TOKEN_ENV));
++        let missing = client_token(None, None, Some(dir.join("none.token"))).unwrap_err();
++        assert!(missing.contains("--control"), "{missing}");
++        assert!(client_token(None, None, None).is_err());
++        std::fs::write(&named, "not a token").unwrap();
++        assert!(client_token(None, Some(named.into()), None).is_err());
++    }
++}
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 193ac46a8..9ed8dfe80 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -8,6 +8,7 @@
+ 
+ pub mod changes;
+ pub mod cmd;
++pub mod control_auth;
+ pub mod file_access;
+ pub mod guard;
+ pub mod inspect;

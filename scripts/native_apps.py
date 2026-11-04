@@ -29,15 +29,18 @@ def command(port, name, params=None):
     return call(port,'engine.execute',dict(command=name,params=params or {}))
 
 class App:
-    def __init__(self, name, directory, native=None):
+    def __init__(self, name, directory, native=None, port=None):
         self.name=name
         self.directory=pathlib.Path(directory).resolve()
         self.directory.mkdir(parents=True,exist_ok=True)
-        self.port=free_port()
+        self.port=port or free_port()
         profile=self.directory/(name+'-profile')
         profile.mkdir(exist_ok=True)
         env=os.environ.copy()
         env[name.upper()+'_CONFIG_DIR']=str(profile)
+        # Owned fixtures always mint their own per-launch native credentials.
+        env.pop(name.upper()+'_CONTROL_TOKEN',None)
+        env.pop(name.upper()+'_CONTROL_TOKEN_FILE',None)
         args=[str(pathlib.Path(os.environ.get('ProgramFiles','C:/Program Files'))/name.title()/(name+'.exe')),'--control',str(self.port),'--automation-read-root',str(self.directory),'--automation-write-root',str(self.directory)]
         # Product directory capitalizes the second C as well.
         args[0]=str(pathlib.Path(os.environ.get('ProgramFiles','C:/Program Files'))/({'vectorcraft':'VectorCraft','figcraft':'FigCraft'}[name])/(name+'.exe'))
