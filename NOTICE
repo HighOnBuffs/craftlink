@@ -1,0 +1,22 @@
+CraftLink
+Copyright (c) 2026 CraftLink contributors.
+Licensed under MIT OR Apache-2.0, at your option.
+
+The shared craft-link-core and craft-atomic dependencies originate in the
+MIT OR Apache-2.0 craft-libs workspace. Copyright (c) 2026 ArtCraft Team and
+the craft-libs contributors. Their source/licenses remain in that repository.
+The core extraction is proposed at https://github.com/storytold/craft-libs/pull/601
+and is pinned to its exact fork commit until upstream review.
+
+Other dependencies retain their own licenses. No Craft application binaries,
+logos, fonts, user documents or private machine evidence are included here.
+Application names identify interoperability targets and imply no endorsement.
+This is an experimental independent contribution, not an official suite release.
+
+docs/figcraft-native-auth-test.patch contains native-server authentication logic
+adapted for a local test composition from storytold/figcraft PR #1473,
+commit c59b50da54d9fdc3a0146db39f293c0a9e4a858b. It is not authored or submitted
+as a new authentication implementation. FigCraft's MIT license is retained at
+docs/licenses/figcraft-LICENSE-MIT; upstream source/attribution applies to the
+extracted logic. The adaptation uses current server signatures and the existing
+settings-directory owner. This patch is for synthetic candidate testing only.

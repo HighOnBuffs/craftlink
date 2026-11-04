@@ -1,0 +1,16 @@
+[workspace]
+resolver="3"
+members=["crates/broker"]
+[workspace.package]
+version="0.1.0"
+edition="2024"
+license="MIT OR Apache-2.0"
+rust-version="1.95"
+[workspace.dependencies]
+serde={version="1",features=["derive"]}
+serde_json="1"
+uuid={version="1",features=["serde"]}
+sha2="0.10"
+craftlink-core={package="craft-link-core",git="https://github.com/HighOnBuffs/craft-libs",rev="46d38608042c17ebaf5aaa9bf82bc0df61fde68f",features=["native"]}
+[workspace.lints.rust]
+unsafe_code="forbid"

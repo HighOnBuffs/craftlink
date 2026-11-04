@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CraftLink application manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "application", "version", "object_types", "representations", "read", "write", "history", "transactions", "lifecycle", "authentication", "filesystem", "fidelity"],
+  "properties": {
+    "schema": {"const": 1},
+    "application": {"type": "string", "minLength": 1, "maxLength": 128},
+    "version": {"type": "string"},
+    "object_types": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}},
+    "representations": {"type": "array", "items": {"type": "string"}},
+    "read": {"const": true},
+    "write": {"type": "boolean"},
+    "history": {"type": "string"},
+    "transactions": {"type": "string"},
+    "lifecycle": {"type": "string"},
+    "authentication": {"type": "string"},
+    "filesystem": {"type": "string"},
+    "fidelity": {"type": "string"}
+  }
+}

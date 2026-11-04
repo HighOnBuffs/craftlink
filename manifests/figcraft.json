@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "application": "figcraft",
+  "version": "0.15.0",
+  "object_types": {"rectangle": ["name", "opacity"]},
+  "representations": ["application/x-figcraft", "application/vnd.craftlink.properties+json"],
+  "read": true,
+  "write": true,
+  "history": "broker semantic history; native history independent",
+  "transactions": "durable broker commit; asynchronous native projection",
+  "lifecycle": "externally launched root-confined control session",
+  "authentication": "broker bearer credential; upstream app control port unauthenticated",
+  "filesystem": "explicit project root; native file must exist",
+  "fidelity": "editable native rectangle placement; only name and opacity synchronize; opaque native snapshots retained"
+}
