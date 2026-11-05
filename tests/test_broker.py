@@ -1,4 +1,4 @@
-import concurrent.futures,json,os,pathlib,socket,subprocess,sys,tempfile,threading,time,unittest,uuid
+import base64,concurrent.futures,json,os,pathlib,socket,socketserver,sqlite3,subprocess,sys,tempfile,threading,time,unittest,uuid
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'sdk'))
 from smoke import Broker
@@ -72,5 +72,69 @@ class BrokerTests(unittest.TestCase):
                     self.assertLess(time.monotonic()-start,1)
                 finally:release.set();thread.join()
                 with self.assertRaises(CraftLinkError):pending.result(5)
+
+    def test_live_snapshot_rejects_aba_revision_even_with_equal_properties(self):
+        native=self.directory/'aba.vectorcraft';native.write_text('synthetic native snapshot fixture')
+        credential=self.directory/'aba.credential';credential.write_text('unit-test-native-credential-not-a-real-secret')
+        state=dict(name='base',revision=1);stop=threading.Event();observed=[]
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(inner):
+                inner.connection.settimeout(2)
+                auth=json.loads(inner.rfile.readline(4097))
+                if auth.get('method')!='auth':return
+                inner.wfile.write(b'{"ok":true}\n');inner.wfile.flush()
+                try:request=json.loads(inner.rfile.readline(8193));method=request['method']
+                except (OSError,ValueError):return
+                if method=='document.inspect':
+                    answer=dict(id=1,revision=state['revision'],path=str(native),capabilities=dict(conditionalExecute=1,documentChangeEvents=1),nodes=[dict(id=2,kind='Rectangle',name=state['name'],opacity=1)])
+                elif method=='engine.execute' and request['params']['command']=='file.saveCopy':
+                    observed.append(request['params'].get('expected'))
+                    # Native A -> B -> A while exporting B. Properties alone miss it.
+                    state['revision']+=2
+                    answer=dict(dataBase64=base64.b64encode(b'snapshot-of-intermediate-B').decode())
+                elif method=='events.poll':
+                    stop.wait(.05);answer=dict(events=[],cursor=0,reset=False,dropped=0)
+                elif method=='engine.execute' and request['params']['command']=='object.setProps':
+                    state.update(name=request['params']['params']['name'],revision=state['revision']+1);answer={}
+                else:return
+                try:inner.wfile.write((json.dumps(dict(ok=True,result=answer))+'\n').encode())
+                except OSError:pass
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads=True
+        with Server(('127.0.0.1',0),Handler) as server:
+            worker=threading.Thread(target=server.serve_forever,kwargs=dict(poll_interval=.05));worker.start()
+            try:
+                obj=uid()
+                self.client.request('commit_transaction',dict(operation=uid(),changes=[dict(object=obj,document=uid(),application='vectorcraft',kind='rectangle',expected=0,value=dict(name='base',opacity=1),native=None)]))
+                binding=uid()
+                registered=self.client.request('bind_native',dict(id=binding,object=obj,profile='vectorcraft',port=server.server_address[1],path=str(native),node=2,baseline=dict(name='base',opacity=1),applied=1,live=True,token_file=str(credential)))
+                state.update(name='new-A',revision=2)
+                with self.assertRaises(CraftLinkError) as rejected:self.client.request('native_changed',dict(binding=binding))
+                self.assertEqual(rejected.exception.code,'conflict')
+                head=self.client.request('resolve_link',dict(object=obj))
+                self.assertEqual(head['revision'],1);self.assertEqual(head['value']['name'],'base')
+                self.assertIn(dict(document=1,revision=2),observed)
+                # Deterministic post-crash fixture: old projection side effect
+                # completed, its receipt did not, and a newer head committed.
+                # No native binding may act while these canonical edits are made.
+                self.broker.close()
+                with sqlite3.connect(self.directory/'.craftlink/craftlink.sqlite') as db:db.execute('DELETE FROM bindings')
+                self.broker=Broker(self.directory);self.client=self.broker.client
+                for revision,name in [(1,'old-projection'),(2,'latest-canonical')]:
+                    self.client.request('commit_transaction',dict(operation=uid(),changes=[dict(object=obj,document=head['document'],application='vectorcraft',kind='rectangle',expected=revision,value=dict(name=name,opacity=1),native=None)]))
+                self.broker.close();state.update(name='old-projection',revision=20)
+                record=registered.copy();record.update(pending=dict(name='old-projection',opacity=1),status='applying')
+                with sqlite3.connect(self.directory/'.craftlink/craftlink.sqlite') as db:db.execute('INSERT INTO bindings VALUES (?,?)',(binding,json.dumps(record)))
+                self.broker=Broker(self.directory);self.client=self.broker.client
+                end=time.monotonic()+4
+                while time.monotonic()<end:
+                    receipt=self.client.request('bindings')[0]
+                    if receipt['status']=='current' and receipt['applied']==3:break
+                    time.sleep(.02)
+                else:self.fail('interrupted pending projection did not recover')
+                self.assertEqual(state['name'],'latest-canonical')
+                self.assertEqual(self.client.request('resolve_link',dict(object=obj))['revision'],3)
+            finally:
+                stop.set();server.shutdown();worker.join()
 
 if __name__=='__main__':unittest.main()

@@ -8,11 +8,11 @@ Shared core proposal: [storytold/craft-libs#601](https://github.com/storytold/cr
 
 - Authenticated loopback broker, durable revisions/events, immutable native snapshots, dependency inspection, optimistic conflicts and managed undo/redo.
 - Native VectorCraft 0.21.0 ↔ FigCraft 0.15.0 rectangles: name/opacity synchronization on save and editable placement from axis-aligned bounds. Paints, paths, rotation, typography and effects are not transferred.
-- Optional candidate FigCraft integration for unsaved command notifications and conditional writes, with explicit capability checks and the upstream control-token protocol. Stock installed apps keep the saved-file path.
+- Optional authenticated VectorCraft/FigCraft candidates for unsaved command notifications and conditional writes. Both directions passed real-process checks; see [the native live slice](docs/VECTOR_LIVE.md). Stock installed apps keep the saved-file path.
 - Capability manifests, Python SDK, generated-app registration example and stdio MCP facade. Native I/O runs outside the metadata lock; committed heads remain readable while projection waits.
 - Optional read-only ArtCraft Launcher binding status, proposed in [launcher PR #1239](https://github.com/storytold/craft-launcher/pull/1239). It uses the existing app details/backend boundary and is off by default.
 
-Broker metadata commits and native UI updates are separate. Native documents and opaque snapshots are retained; this is not universal lossless interchange. Only the optional candidate native endpoint has conditional writes; the legacy VectorCraft endpoint retains its documented inspect/apply race. Use owned synthetic sessions until integration hardening is complete.
+Broker metadata commits and native UI updates are separate. Native documents and opaque snapshots are retained; this is not universal lossless interchange. Only the optional candidate native endpoints have conditional writes; the legacy VectorCraft endpoint retains its documented inspect/apply race. Use owned synthetic sessions until integration hardening is complete.
 
 ## Build and check
 

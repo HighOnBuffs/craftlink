@@ -365,6 +365,17 @@ fn run() -> craftlink_core::Result<()> {
                     native.reconcile_all();
                 }
                 NativeJob::Command(method, p, reply) => {
+                    // Retire the previous reader even when the app reuses its port/UID.
+                    // Otherwise a still-unwinding old poll can hide the new subscription.
+                    if method == "reconnect"
+                        && let Some(id) = p
+                            .get("binding")
+                            .and_then(Value::as_str)
+                            .and_then(|id| Id::parse_str(id).ok())
+                        && let Some((_, _, cancel)) = feeds.remove(&id)
+                    {
+                        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = reply.send(dispatch(&mut native, &method, p));
                 }
                 NativeJob::Paths(paths) => {
@@ -400,8 +411,10 @@ fn run() -> craftlink_core::Result<()> {
                         && b.live
                     {
                         enabled.insert(b.id);
-                        if feeds.get(&b.id).is_some_and(|(port, document, _)| {
-                            *port == b.port && *document == b.native_document
+                        if feeds.get(&b.id).is_some_and(|(port, document, active)| {
+                            *port == b.port
+                                && *document == b.native_document
+                                && active.load(std::sync::atomic::Ordering::SeqCst)
                         }) {
                             continue;
                         }
@@ -443,6 +456,9 @@ fn run() -> craftlink_core::Result<()> {
                                     dirty.store(true, std::sync::atomic::Ordering::SeqCst);
                                 }
                             }
+                            // A reconnect command may reuse the same port and native UID.
+                            // Retire the dead reader so that wake can subscribe again.
+                            active.store(false, std::sync::atomic::Ordering::SeqCst);
                         });
                     }
                 }

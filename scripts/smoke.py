@@ -85,6 +85,10 @@ def main():
         n=wait_name(target,'Source change');assert abs(n.get('opacity',1)-.6)<.00001
         results['latency_ms']['source_save_to_target']=round((time.perf_counter()-start)*1000,2)
         results['checks']['source_save_auto_update']=True
+        # UI application precedes the asynchronous native save/baseline receipt.
+        # Stock endpoints lack conditional writes: wait for that acknowledged
+        # projection before starting a new local edit, then exercise late events.
+        wait_status(target.binding,'current')
         start=time.perf_counter()
         command(target.port,'node.set',dict(ids=[target.node],props=dict(name='Receiver change',opacity=.35)))
         # Deterministically exercise a late projection event while a new native

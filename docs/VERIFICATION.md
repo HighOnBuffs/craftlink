@@ -49,4 +49,14 @@ Set `CRAFTLINK_LAUNCHER_STATUS_EXE` to that example executable, build this consu
 
 Do not start an ordinary candidate launcher beside a production launcher: its singleton handoff is shared. The probe does not start that shell. Full launcher workspace CI, singleton lifecycle and non-Windows runtime are unverified. Connection inputs are transient; no automatic discovery, polling, installation, native editing or asset browser is included.
 
-Only rectangle name/opacity and initial axis-aligned bounds are accepted. Arbitrary gestures, collaboration writes, VectorCraft unsaved events/conditional writes, other native adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.
+## VectorCraft native live milestone
+
+[VectorCraft PR #5689](https://github.com/storytold/vectorcraft/pull/5689) adds
+shared-bus invalidations, conditional properties and guarded byte snapshots.
+The exact candidates, tests, failure corrections and reproduction are in
+[VECTOR_LIVE.md](VECTOR_LIVE.md). Ten actual two-app checks passed, including
+both unsaved directions, native/managed history, authentication, conflict guards,
+broker interruption and same-port app reopen. A successful single sample measured
+78.56/61.63 ms. Five broker regressions and the 14-check saved-file smoke passed.
+
+Only rectangle name/opacity and initial axis-aligned bounds are accepted. Arbitrary gestures, collaboration writes, other semantic adapters and universal losslessness remain unsupported. Existing stock control ports retain their documented security limitations. Binary release dependency notices/all-target license review remain open.
