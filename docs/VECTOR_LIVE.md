@@ -1,4 +1,62 @@
-# Verified native live slice — 2026-11-04
+# Native live slice — baseline and reliability continuation
+
+## Current candidate — 2026-11-05
+
+Use VectorCraft feature `9c9e1f47cd02a757010c258a386748ce384be846`, which preserves
+the original feature and merges upstream `7436b4be5` without rewriting history.
+Apply this revision's `vectorcraft-native-auth-test.patch`; the resulting native
+source is the isolated test composition `b5a79129cc6966f0f83c780bb3791d46f08c6778`.
+The patch retains existing auth ownership/licensing and upstream graceful socket
+close behavior. FigCraft's pin and build/run commands below are unchanged.
+
+The original 2026-11-04 evidence below is historical. To reproduce that exact
+baseline, use consumer commit `e590382bdba2c3e1b386d05546eb63077d019e64`, including
+its original authentication patch and smoke script.
+
+New scope: guarded background document routing for name/opacity and native byte
+snapshots, with no foreground tab/tool changes. UIDs survive tab reordering within
+the process; closed/mismatched targets fail explicitly. Direct native interaction
+commits notify the shared change bus once, coalescing preview samples. This does
+not add geometry/transform interoperability or in-progress preview streaming.
+
+Executed on Windows: 6 engine change-feed tests, 6 UI routing/guard tests,
+26 native socket/auth tests, 5 consumer subprocess regressions, engine WASM
+check, 28-crate layering check and the candidate desktop build passed. The
+upstream merge alone also passed 58 selected engine regressions. Strict native
+Clippy still fails on unchanged `drop_non_drop` at cleanup/text.rs:1007 and
+fonts.rs:626; the diagnostic run allowing only that lint passed. No lint policy
+or acceptance assertion was weakened. Full workspace CI/non-Windows runtime
+were not run.
+
+The real authenticated two-app smoke passed **13 checks**: the original
+live/recovery/auth/history/reopen checks plus both background links with both
+foreground tabs unchanged, projection while an unrelated native drag remains
+pending, mismatched-target rejection, and a native 25-sample pointer drag with
+exactly one invalidation/undo step and geometry-preserving undo/redo.
+Single-run dispatch-to-observation samples (not percentiles):
+
+| Operation | ms |
+| --- | ---: |
+| Unsaved VectorCraft to FigCraft | 70.73 |
+| Unsaved FigCraft to VectorCraft | 63.03 |
+| Background FigCraft to VectorCraft | 72.95 |
+| Background VectorCraft to FigCraft | 79.87 |
+| Native 25-sample drag commit and observation | 31.67 |
+
+Retained failures: a test imported a private NodeId re-export; the auth test
+composition needed the new graceful-close socket fixture authenticated; the
+first smoke used `select` instead of catalog ID `selection`. Each was corrected
+and its focused check rerun. The final smoke stopped all owned processes.
+
+Remaining safety boundary: target-document pending interactions and undo groups
+still reject writes; automatic retry after transient busy/revision failures
+needs hardening so a temporary refusal cannot freeze a binding as conflicted.
+Multiple tabs in both applications were tested; multiple simultaneously running
+instances of the same product were not. Broker credentials and native auth
+adoption remain separately owned. Core automated storage/history review findings
+on #601 are pending investigation; these results are not power-loss certification.
+
+## Original verified baseline — 2026-11-04
 
 Native seam: [VectorCraft PR #5689](https://github.com/storytold/vectorcraft/pull/5689),
 commit `f6bed625cebc27785586c7080bec8b33b8c52fce`, based on upstream

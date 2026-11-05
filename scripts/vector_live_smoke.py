@@ -37,6 +37,8 @@ def main():
             app.node = command(app.port, 'shape.rectangle', dict(x=10, y=10, width=120, height=80))['id']
             app.native, app.binding = root / (name + '.' + name), uid()
             save(app)
+            state = call(app.port, 'document.inspect')
+            app.document_uid = state.get('uid', state.get('id'))
         vector, fig = apps
         broker = Broker(root)
         client = broker.client
@@ -55,7 +57,7 @@ def main():
         def wait(app, name, opacity=None):
             end = time.monotonic() + 12
             while time.monotonic() < end:
-                state = call(app.port, 'document.inspect')
+                state = call(app.port, 'document.inspect', dict(document=app.document_uid))
                 node = find(state, app.node)
                 if node['name'] == name and (opacity is None or abs(node.get('opacity', 1) - opacity) < .00001):
                     return state
@@ -152,6 +154,8 @@ def main():
             app.close()
             replacement = App(name, root, path, port=port)
             replacement.node, replacement.binding, replacement.native = node, binding, path
+            state = call(replacement.port, 'document.inspect')
+            replacement.document_uid = state.get('uid', state.get('id'))
             apps[index] = replacement
             client.request('reconnect', dict(binding=binding, port=replacement.port, token_file=str(replacement.token_file)))
             wait(replacement, 'Broker offline', .55)
@@ -163,18 +167,82 @@ def main():
         assert client.request('resolve_link', dict(object=obj))['document'] == document
         result['checks']['both_native_reopens_preserve_link_identity_and_live_updates'] = True
 
+        # Both links stay bound while users work in other native tabs.
+        foreground = {}
+        for app in apps:
+            command(app.port, 'file.new', {})
+            other = command(app.port, 'shape.rectangle', dict(x=200, y=200, width=30, height=40))['id']
+            if app is vector:
+                call(app.port, 'ui.pointer', dict(events=[
+                    dict(kind='down', x=215, y=220, space='doc'),
+                    dict(kind='drag', x=220, y=225, space='doc')]))
+            state = call(app.port, 'document.inspect')
+            foreground[app.name] = (state.get('uid', state.get('id')), other, find(state, other), state['revision'])
+        start = time.perf_counter()
+        call(fig.port, 'engine.execute', dict(document=fig.document_uid, command='node.set',
+            params=dict(ids=[fig.node], props=dict(name='Background Fig', opacity=.45))))
+        wait(vector, 'Background Fig', .45)
+        result['latency_ms']['background_fig_to_vector'] = round((time.perf_counter() - start) * 1000, 2)
+        state = call(vector.port, 'document.inspect', dict(document=vector.document_uid))
+        start = time.perf_counter()
+        call(vector.port, 'engine.execute', dict(document=vector.document_uid, command='object.setProps',
+            params=dict(ids=[vector.node], name='Background Vector', opacity=65),
+            expected=dict(document=vector.document_uid, revision=state['revision'])))
+        wait(fig, 'Background Vector', .65)
+        result['latency_ms']['background_vector_to_fig'] = round((time.perf_counter() - start) * 1000, 2)
+        for app in apps:
+            state = call(app.port, 'document.inspect')
+            document_id, node_id, original, revision = foreground[app.name]
+            assert state.get('uid', state.get('id')) == document_id
+            assert find(state, node_id) == original, 'Foreground object changed'
+            assert state['revision'] == revision, 'Foreground document was mutated'
+        result['checks']['bidirectional_background_documents_preserve_foreground_tabs'] = True
+        cursor = call(vector.port, 'events.poll', dict(after=0, timeoutMs=0))['cursor']
+        call(vector.port, 'ui.pointer', dict(events=[dict(kind='up', x=220, y=225, space='doc')]))
+        assert call(vector.port, 'events.poll', dict(after=cursor, timeoutMs=0))['cursor'] == cursor + 1
+        result['checks']['background_projection_preserves_unrelated_native_drag'] = True
+
         broker.close(); broker = None
+        command(vector.port, 'document.activate', dict(index=0))
         command(vector.port, 'object.setProps', dict(ids=[vector.node], name='Standalone'))
         save(vector)
         old = call(vector.port, 'document.inspect')
-        command(vector.port, 'file.new', {})
+        command(vector.port, 'document.activate', dict(index=1))
         try:
-            call(vector.port, 'engine.execute', dict(command='object.setProps', params=dict(ids=[vector.node], name='Wrong tab'),
+            call(vector.port, 'engine.execute', dict(document=foreground['vectorcraft'][0], command='object.setProps',
+                 params=dict(ids=[vector.node], name='Wrong tab'),
                  expected=dict(document=old['uid'], revision=old['revision'])))
-            raise AssertionError('Inactive native document was overwritten')
+            raise AssertionError('Mismatched document guard was accepted')
         except RuntimeError as rejected:
             assert 'conflict:' in str(rejected)
-        result['checks']['standalone_save_and_inactive_document_protection'] = True
+        assert call(vector.port, 'document.inspect')['uid'] == foreground['vectorcraft'][0]
+        assert find(call(vector.port, 'document.inspect', dict(document=old['uid'])), vector.node)['name'] == 'Standalone'
+        result['checks']['standalone_save_and_mismatched_document_protection'] = True
+
+        # Exercise native mouse-tool dispatch, not a substitute transform command.
+        other = foreground['vectorcraft'][1]
+        command(vector.port, 'tool.select', dict(tool='selection'))
+        command(vector.port, 'select.set', dict(ids=[other]))
+        before = call(vector.port, 'document.inspect')
+        cursor = call(vector.port, 'events.poll', dict(after=0, timeoutMs=0))['cursor']
+        start = time.perf_counter()
+        bounds = find(before, other)['bounds']
+        x, y = bounds['x'] + bounds['width']/2, bounds['y'] + bounds['height']/2
+        events = [dict(kind='down', x=x, y=y, space='doc')]
+        events += [dict(kind='drag', x=x+i, y=y+i, space='doc') for i in range(1, 26)]
+        events += [dict(kind='up', x=x+25, y=y+25, space='doc')]
+        call(vector.port, 'ui.pointer', dict(events=events))
+        after = call(vector.port, 'document.inspect')
+        feed = call(vector.port, 'events.poll', dict(after=cursor, timeoutMs=0))
+        assert feed['cursor'] == cursor + 1, 'Native gesture must publish exactly one committed invalidation'
+        assert find(after, other)['bounds'] != find(before, other)['bounds'], 'Native drag did not move the object'
+        assert len(after['history']) == len(before['history']) + 1
+        result['latency_ms']['native_drag_25_samples_commit_and_observe'] = round((time.perf_counter() - start) * 1000, 2)
+        command(vector.port, 'edit.undo', {})
+        assert find(call(vector.port, 'document.inspect'), other)['bounds'] == find(before, other)['bounds']
+        command(vector.port, 'edit.redo', {})
+        assert find(call(vector.port, 'document.inspect'), other)['bounds'] == find(after, other)['bounds']
+        result['checks']['native_pointer_drag_coalesces_and_undo_redo_preserves_geometry'] = True
         result['ok'] = True
     finally:
         if broker:

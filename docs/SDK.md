@@ -57,8 +57,10 @@ native bytes for an actual unsaved semantic revision. Snapshot export is guarded
 at the observed revision; extra revision movement rejects A→B→A capture. FigCraft's
 verified byte-copy bookkeeping advances its revision once, which the adapter
 accounts for explicitly. Property writes carry `{expected: {document, revision}}`.
-FigCraft routes by live document ID; VectorCraft requires that ID to remain the
-active document and rejects other tabs. A completed pending projection survives
+FigCraft routes by live document ID. The updated VectorCraft candidate routes
+guarded name/opacity writes and native snapshots to background document UIDs,
+preserving the foreground tab and tool; unsupported background commands fail
+explicitly. Older candidates remain active-document-only. A completed pending projection survives
 broker interruption without becoming a new local edit; explicit reconnect also
 retires the old subscription when a native process reuses its port/ID.
 Native ids/revisions are process-local, distinct from CraftLink UUIDs. Reconnect

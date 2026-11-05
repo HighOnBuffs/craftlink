@@ -25,7 +25,7 @@ index f46213231..84d9a1d56 100644
  # wayland-data-control: native Wayland clipboard (Linux; X11 through XWayland only sees what X11 apps copied).
  arboard = { workspace = true, features = ["image-data", "wayland-data-control"] }
 diff --git a/apps/vectorcraft/src/control_server.rs b/apps/vectorcraft/src/control_server.rs
-index e750375af..e52189c1d 100644
+index dca11657f..9fd7c2f92 100644
 --- a/apps/vectorcraft/src/control_server.rs
 +++ b/apps/vectorcraft/src/control_server.rs
 @@ -1,6 +1,11 @@
@@ -168,9 +168,9 @@ index e750375af..e52189c1d 100644
 -fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, handle: impl FnMut(String, Value) -> Option<Value>) {
 +fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, token: &str, handle: impl FnMut(String, Value) -> Option<Value>) {
      let Ok(read) = stream.try_clone() else { return };
+     let closer = stream.try_clone().ok();
      let read = DeadlineReader::new(read, timeouts.idle, timeouts.line);
-     // Replies reach the writer in [`REPLY_CHUNK`] pieces ([`write_line`]), so checking the remaining
-@@ -163,6 +221,7 @@ fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, handle: impl Fn
+@@ -164,6 +222,7 @@ fn serve_socket(stream: TcpStream, timeouts: ConnectionTimeouts, handle: impl Fn
      serve_lines_with(
          read,
          out,
@@ -178,7 +178,7 @@ index e750375af..e52189c1d 100644
          handle,
          |reader| {
              let buffered = !reader.buffer().is_empty();
-@@ -192,6 +251,9 @@ fn parse_line(bytes: &[u8]) -> Line {
+@@ -220,6 +279,9 @@ fn parse_line(bytes: &[u8]) -> Line {
      if text.is_empty() {
          return Line::Blank;
      }
@@ -188,7 +188,7 @@ index e750375af..e52189c1d 100644
      let msg = match serde_json::from_str::<Value>(text) {
          Ok(v) => v,
          Err(e) => return Line::Reject(format!("bad JSON ({e}); expected one JSON request object per line; closing the connection")),
-@@ -209,6 +271,17 @@ fn parse_line(bytes: &[u8]) -> Line {
+@@ -237,6 +299,17 @@ fn parse_line(bytes: &[u8]) -> Line {
      }
  }
  
@@ -206,7 +206,7 @@ index e750375af..e52189c1d 100644
  /// Read one `\n`-terminated line of at most `max` bytes into `buf` (newline stripped).
  /// `Ok(false)` at end of stream; `Err` when the line is too long or the read fails.
  fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> Result<bool, String> {
-@@ -249,18 +322,28 @@ fn write_line(out: &mut impl Write, v: &Value) -> std::io::Result<()> {
+@@ -277,18 +350,28 @@ fn write_line(out: &mut impl Write, v: &Value) -> std::io::Result<()> {
  /// returns the reply object (the request's `id` is added here).
  #[cfg(test)]
  fn serve_lines<R: Read, W: Write>(read: R, out: W, handle: impl FnMut(String, Value) -> Option<Value>) {
@@ -236,7 +236,7 @@ index e750375af..e52189c1d 100644
      loop {
          if begin_line(&mut reader).is_err() {
              return;
-@@ -274,8 +357,22 @@ fn serve_lines_with<R: Read, W: Write>(
+@@ -302,8 +385,22 @@ fn serve_lines_with<R: Read, W: Write>(
              Ok(true) => match parse_line(&buf) {
                  Line::Blank => continue,
                  Line::Reject(e) => e,
@@ -261,7 +261,7 @@ index e750375af..e52189c1d 100644
                          o.insert("id".into(), id);
                      }
 diff --git a/apps/vectorcraft/src/control_server/tests.rs b/apps/vectorcraft/src/control_server/tests.rs
-index 957df2022..629f516e6 100644
+index d5614267f..7c5be0e3f 100644
 --- a/apps/vectorcraft/src/control_server/tests.rs
 +++ b/apps/vectorcraft/src/control_server/tests.rs
 @@ -1,5 +1,13 @@
@@ -332,7 +332,35 @@ index 957df2022..629f516e6 100644
      let start = std::time::Instant::now();
      while open.load(Ordering::SeqCst) == MAX_CONNECTIONS && start.elapsed() < WAIT {
          std::thread::sleep(Duration::from_millis(10));
-@@ -387,7 +403,7 @@ fn extra_connections_are_refused() {
+@@ -334,20 +350,22 @@ fn tcp_connection_is_closed_after_junk() {
+     let addr = listener.local_addr().unwrap();
+     let server = std::thread::spawn(move || {
+         let (s, _) = listener.accept().unwrap();
+-        serve_socket(s, ConnectionTimeouts::default(), |_, _| Some(json!({"ok": true})));
++        serve_socket(s, ConnectionTimeouts::default(), TOKEN, |_, _| Some(json!({"ok": true})));
+     });
+     let mut c = TcpStream::connect(addr).unwrap();
+     c.set_read_timeout(Some(WAIT)).unwrap();
+     // The server closes gracefully ([`close_gracefully`]): the client reads both replies and then
+     // the end of the stream, not a reset.
+-    c.write_all(b"{\"id\":7,\"method\":\"x\"}\nhello\n").unwrap();
++    c.write_all(format!("{{\"id\":0,\"method\":\"auth\",\"params\":{{\"token\":\"{TOKEN}\"}}}}\n{{\"id\":7,\"method\":\"x\"}}\nhello\n").as_bytes())
++        .unwrap();
+     let mut text = String::new();
+     c.read_to_string(&mut text).unwrap(); // returns at EOF: the server closed the connection
+     server.join().unwrap();
+     let lines: Vec<&str> = text.lines().collect();
+-    assert_eq!(lines.len(), 2, "{text}");
+-    assert!(lines[0].contains("\"id\":7"));
+-    assert!(lines[1].contains("closing the connection"));
++    assert_eq!(lines.len(), 3, "{text}");
++    assert!(lines[0].contains("authenticated"));
++    assert!(lines[1].contains("\"id\":7"));
++    assert!(lines[2].contains("closing the connection"));
+ }
+ 
+ #[test]
+@@ -386,7 +404,7 @@ fn extra_connections_are_refused() {
      let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
      let addr = listener.local_addr().unwrap();
      let (tx, _rx) = channel::<ControlRequest>();
@@ -341,7 +369,7 @@ index 957df2022..629f516e6 100644
      // Idle connections are accepted in order and held open.
      let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
      let mut extra = TcpStream::connect(addr).unwrap();
-@@ -410,3 +426,121 @@ fn the_control_channel_keeps_the_app_at_full_priority_on_macos() {
+@@ -409,3 +427,121 @@ fn the_control_channel_keeps_the_app_at_full_priority_on_macos() {
      assert!(!options.contains(NSActivityOptions::IdleSystemSleepDisabled), "the channel must not keep the Mac awake");
      keep_answering();
  }
